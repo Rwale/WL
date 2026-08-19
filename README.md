@@ -10,6 +10,10 @@ This folder contains the portable Vercel version of ReportFlow. It includes:
 - Neon/Postgres database storage;
 - Vercel Blob storage for Excel files and report evidence.
 
+The storage adapter accepts either a Public or Private Vercel Blob store. It
+detects the access mode associated with `BLOB_READ_WRITE_TOKEN` during upload
+and serves private objects through authenticated ReportFlow routes.
+
 ## 1. Push this folder to GitHub
 
 Create an empty repository on GitHub, then run these commands inside this folder:
