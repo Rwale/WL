@@ -1,0 +1,8 @@
+{
+  "$schema":"https://openapi.vercel.sh/vercel.json",
+  "framework":"nextjs",
+  "functions":{
+    "app/api/workbook-template/route.ts":{"maxDuration":60},
+    "app/api/export/route.ts":{"maxDuration":60}
+  }
+}

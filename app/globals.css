@@ -1,0 +1,2 @@
+@import "tailwindcss";
+*{box-sizing:border-box}:root{--ink:#17221d;--muted:#6f7d76;--line:#dfe6e1;--green:#0d5a3a;--green-dark:#073f2a;--soft:#f3f6f4}html{background:#eef2ef}body{margin:0;color:var(--ink);background:#eef2ef;font-family:Arial,Helvetica,sans-serif}button,select{font:inherit}
