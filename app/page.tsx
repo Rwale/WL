@@ -196,7 +196,7 @@ function TeamSection(props:{data:Snapshot;onEdit:(u:AnyRow)=>void}) {
 function SettingsSection(props:{data:Snapshot;onSave:(d:AnyRow)=>void}) {
   return <section className="panel settings-panel"><div className="panel-title"><div><h2>System settings</h2><p>Saved configuration used across ReportFlow</p></div></div><form onSubmit={e=>{e.preventDefault();props.onSave(formValues(e.currentTarget))}}><div className="form-grid three"><Field label="Company Name" name="companyName" defaultValue={props.data.settings.companyName}/><Field label="Reporting Year" name="reportingYear" type="number" defaultValue={props.data.settings.reportingYear||new Date().getFullYear()}/><Field label="Default Sales Target" name="defaultSalesTarget" type="number" min={0} defaultValue={props.data.settings.defaultSalesTarget}/><Field label="Default Sampling Target" name="defaultSamplingTarget" type="number" min={0} defaultValue={props.data.settings.defaultSamplingTarget}/><Field label="Regions" name="regions" defaultValue={props.data.settings.regions}/><Field label="States" name="states" defaultValue={props.data.settings.states}/><Field label="Locations" name="locations" defaultValue={props.data.settings.locations}/><Field label="Outlet Types" name="outletTypes" defaultValue={props.data.settings.outletTypes}/><Field label="Report Statuses" name="reportStatuses" defaultValue={props.data.settings.reportStatuses||reportStatuses.join(", ")}/></div><div className="form-actions"><button className="primary">Save settings</button></div></form></section>;
 }
-function ReportForm(props:{data:Snapshot;item:AnyRow|null;files:File[];setFiles:(f:File[])=>void;notice:string;onClose:()=>void;onSave:(e:React.FormEvent<HTMLFormElement>,s:string)=>void}) {
+function _LegacyReportForm(props:{data:Snapshot;item:AnyRow|null;files:File[];setFiles:(f:File[])=>void;notice:string;onClose:()=>void;onSave:(e:React.FormEvent<HTMLFormElement>,s:string)=>void}) {
   return <Modal title={props.item?.id?"Edit field report":"New field report"} onClose={props.onClose} wide><form onSubmit={e=>props.onSave(e,"Submitted")}><div className="form-grid three">
     <Field label="Campaign / Activation" name="activationId" required defaultValue={props.item?.activationId}><option value="">Select campaign</option>{props.data.activations.filter(a=>a.status!=="Cancelled").map(a=><option value={a.id} key={a.id}>{a.campaignName}</option>)}</Field>
     <Field label="Template" name="templateId" defaultValue={props.item?.templateId}><option value="">Standard report</option>{props.data.templates.filter(t=>t.status==="Active").map(t=><option value={t.id} key={t.id}>{t.name}</option>)}</Field>
@@ -228,6 +228,74 @@ function ReportForm(props:{data:Snapshot;item:AnyRow|null;files:File[];setFiles:
     <Field label="General Comments" name="generalComments" type="textarea" defaultValue={props.item?.generalComments}/>
     <label>Photo / Evidence Upload<input type="file" accept="image/*" multiple onChange={e=>props.setFiles(Array.from(e.target.files||[]))}/><small>{props.files.length} file(s) selected · maximum 10, 8 MB each</small></label>
   </div>{props.notice&&<div className="form-message">{props.notice}</div>}<div className="form-actions"><button type="button" onClick={props.onClose}>Cancel</button><button type="button" className="secondary" onClick={e=>props.onSave({preventDefault:()=>{},currentTarget:e.currentTarget.closest("form")!} as any,"Draft")}>Save Draft</button><button type="submit" className="primary">Submit Report</button></div></form></Modal>;
+}
+function ReportForm(props:{data:Snapshot;item:AnyRow|null;files:File[];setFiles:(f:File[])=>void;notice:string;onClose:()=>void;onSave:(e:React.FormEvent<HTMLFormElement>,s:string)=>void}) {
+  const [activationId,setActivationId]=useState(String(props.item?.activationId||""));
+  const [outletName,setOutletName]=useState(String(props.item?.outletName||""));
+  const [activationDate,setActivationDate]=useState(String(props.item?.activationDate||""));
+  const [salesTarget,setSalesTarget]=useState(String(props.item?.salesTarget??""));
+  const [samplingTarget,setSamplingTarget]=useState(String(props.item?.samplingTarget??""));
+  const activeCampaigns=props.data.activations.filter(a=>a.status!=="Cancelled");
+  const selectedActivation=activeCampaigns.find(a=>String(a.id)===activationId);
+  const availableOutlets=props.data.outlets.filter(o=>(!activationId||String(o.activationId)===activationId)&&(o.status!=="Inactive"||o.name===props.item?.outletName));
+  const selectedOutlet=availableOutlets.find(o=>o.name===outletName);
+  const outletType=selectedOutlet?.outletType||props.item?.outletType||"";
+  const outletLocation=selectedOutlet?.location||props.item?.location||"";
+  const outletState=selectedOutlet?.state||props.item?.state||"";
+  const outletRegion=selectedOutlet?.region||props.item?.region||"";
+  const chooseActivation=(value:string)=>{
+    setActivationId(value);
+    setOutletName("");
+    setSalesTarget("");
+    setSamplingTarget("");
+    const activation=activeCampaigns.find(a=>String(a.id)===value);
+    if(activation&&(!activationDate||activationDate<activation.startDate||activationDate>activation.endDate))setActivationDate(activation.startDate);
+  };
+  const chooseOutlet=(value:string)=>{
+    setOutletName(value);
+    const outlet=props.data.outlets.find(o=>String(o.activationId)===activationId&&o.name===value);
+    if(outlet){
+      setSalesTarget(String(outlet.salesTarget??props.data.settings.defaultSalesTarget??""));
+      setSamplingTarget(String(outlet.samplingTarget??props.data.settings.defaultSamplingTarget??""));
+    }
+  };
+  return <Modal title={props.item?.id?"Edit field report":"New field report"} onClose={props.onClose}><form onSubmit={e=>props.onSave(e,"Submitted")}>
+    <p className="report-form-intro">Enter the weekly results only. Outlet, location and team details are filled automatically.</p>
+    <div className="form-grid two report-core-grid">
+      <label>Campaign / Activation<select name="activationId" required value={activationId} onChange={e=>chooseActivation(e.target.value)}><option value="">Select campaign</option>{activeCampaigns.map(a=><option value={a.id} key={a.id}>{a.campaignName}</option>)}</select></label>
+      <Field label="Reporting Week" name="week" type="number" min={1} required defaultValue={props.item?.week}/>
+      <label>Activation Date<input name="activationDate" type="date" required value={activationDate} min={selectedActivation?.startDate} max={selectedActivation?.endDate} onChange={e=>setActivationDate(e.target.value)}/></label>
+      <label>Outlet<select name="outletName" required value={outletName} onChange={e=>chooseOutlet(e.target.value)} disabled={!activationId}><option value="">{activationId?"Select outlet":"Select campaign first"}</option>{availableOutlets.map(o=><option value={o.name} key={o.id}>{o.name}</option>)}</select></label>
+      {outletName&&<div className="report-autofill"><strong>Filled automatically</strong><span>{[outletLocation,outletType,outletState,outletRegion].filter(Boolean).join(" · ")}</span><small>Reported by {props.item?.fieldExecutive||props.data.profile.name}</small></div>}
+    </div>
+    <h3 className="report-form-section">Weekly performance</h3>
+    <div className="form-grid two">
+      <label>Sales Target<input name="salesTarget" type="number" min={0} required value={salesTarget} onChange={e=>setSalesTarget(e.target.value)}/></label>
+      <Field label="Actual Sales" name="actualSales" type="number" min={0} required defaultValue={props.item?.actualSales}/>
+      <label>Sampling Target<input name="samplingTarget" type="number" min={0} required value={samplingTarget} onChange={e=>setSamplingTarget(e.target.value)}/></label>
+      <Field label="Actual Sampled" name="actualSampled" type="number" min={0} required defaultValue={props.item?.actualSampled}/>
+      <Field label="Opening Stock" name="openingStock" type="number" min={0} required defaultValue={props.item?.openingStock}/>
+      <Field label="Closing Stock" name="closingStock" type="number" min={0} required defaultValue={props.item?.closingStock}/>
+      <Field label="Consumers Engaged" name="consumersEngaged" type="number" min={0} required defaultValue={props.item?.consumersEngaged}/>
+    </div>
+    <input type="hidden" name="outletId" value={selectedOutlet?.id||props.item?.outletId||""}/>
+    <input type="hidden" name="outletType" value={outletType}/><input type="hidden" name="location" value={outletLocation}/><input type="hidden" name="state" value={outletState}/><input type="hidden" name="region" value={outletRegion}/>
+    <input type="hidden" name="fieldExecutive" value={props.item?.fieldExecutive||props.data.profile.name}/><input type="hidden" name="bottlesSold" value={props.item?.bottlesSold||0}/>
+    <details className="optional-report-details"><summary>Add notes, evidence or extra details <span>Optional</span></summary><div className="form-grid two optional-report-grid">
+      <Field label="Template" name="templateId" defaultValue={props.item?.templateId}><option value="">Standard report</option>{props.data.templates.filter(t=>t.status==="Active").map(t=><option value={t.id} key={t.id}>{t.name}</option>)}</Field>
+      <Field label="Supervisor" name="supervisor" defaultValue={props.item?.supervisor}/>
+      <Field label="Cases Sold" name="casesSold" type="number" min={0} defaultValue={props.item?.casesSold}/>
+      <Field label="Consumer Feedback" name="consumerFeedback" type="textarea" defaultValue={props.item?.consumerFeedback}/>
+      <Field label="Key Observations" name="keyObservations" type="textarea" defaultValue={props.item?.keyObservations}/>
+      <Field label="Challenges" name="challenges" type="textarea" defaultValue={props.item?.challenges}/>
+      <Field label="Competitor Activities" name="competitorActivities" type="textarea" defaultValue={props.item?.competitorActivities}/>
+      <Field label="Recommendations" name="recommendations" type="textarea" defaultValue={props.item?.recommendations}/>
+      <Field label="Corrective / Next Action" name="correctiveAction" type="textarea" defaultValue={props.item?.correctiveAction}/>
+      <Field label="General Comments" name="generalComments" type="textarea" defaultValue={props.item?.generalComments}/>
+      <label>Photo / Evidence Upload<input type="file" accept="image/*" multiple onChange={e=>props.setFiles(Array.from(e.target.files||[]))}/><small>{props.files.length} file(s) selected · maximum 10, 8 MB each</small></label>
+    </div></details>
+    {props.notice&&<div className="form-message">{props.notice}</div>}<div className="form-actions"><button type="button" onClick={props.onClose}>Cancel</button><button type="button" className="secondary" onClick={e=>props.onSave({preventDefault:()=>{},currentTarget:e.currentTarget.closest("form")!} as any,"Draft")}>Save Draft</button><button type="submit" className="primary">Submit Report</button></div>
+  </form></Modal>;
 }
 function ActivationForm(props:{item:AnyRow|null;onClose:()=>void;onSave:(d:AnyRow)=>void}) {
   return <Modal title={props.item?"Edit activation":"Create activation"} onClose={props.onClose}><form onSubmit={e=>{e.preventDefault();props.onSave(Object.assign({},formValues(e.currentTarget),{id:props.item?.id}))}}><div className="form-grid"><Field label="Campaign Name" name="campaignName" required defaultValue={props.item?.campaignName}/><Field label="Client" name="client" required defaultValue={props.item?.client}/><Field label="Brand" name="brand" required defaultValue={props.item?.brand}/><Field label="Start Date" name="startDate" type="date" required defaultValue={props.item?.startDate}/><Field label="End Date" name="endDate" type="date" required defaultValue={props.item?.endDate}/><Field label="Locations" name="locations" defaultValue={props.item?.locations}/><Field label="States" name="states" defaultValue={props.item?.states}/><Field label="Sales Target" name="salesTarget" type="number" min={0} defaultValue={props.item?.salesTarget}/><Field label="Sampling Target" name="samplingTarget" type="number" min={0} defaultValue={props.item?.samplingTarget}/><Field label="Status" name="status" defaultValue={props.item?.status}><option>Planned</option><option>Active</option><option>Completed</option><option>Paused</option><option>Cancelled</option></Field><Field label="Reporting Frequency" name="reportingFrequency" defaultValue={props.item?.reportingFrequency}><option>Daily</option><option>Weekly</option><option>Monthly</option></Field></div><Field label="Campaign Description" name="description" type="textarea" defaultValue={props.item?.description}/><div className="form-actions"><button type="button" onClick={props.onClose}>Cancel</button><button className="primary">Save activation</button></div></form></Modal>;
