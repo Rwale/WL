@@ -36,7 +36,7 @@ export async function GET() {
     db.select().from(reportPhotos).orderBy(desc(reportPhotos.uploadedAt)), db.select().from(reviewHistory).orderBy(desc(reviewHistory.reviewedAt)), db.select().from(settings),
   ]);
   const visibleReports = profile.role === "Field Executive" ? allReports.filter(r => r.submittedBy === profile.id) : allReports;
-  return Response.json({ profile, permissions: { canManage: elevated.has(profile.role), canReview: reviewers.has(profile.role), canExport: true }, users: allUsers, activations: allActivations, outlets: allOutlets, templates: allTemplates, workbookTemplates: allWorkbookTemplates, reports: visibleReports, photos: allPhotos, reviews: allReviews, settings: Object.fromEntries(allSettings.map(x => [x.key, x.value])) });
+  return Response.json({ profile, permissions: { canManage: elevated.has(profile.role), canReview: reviewers.has(profile.role), canExport: true, canResetWeek: profile.role === "Administrator" }, users: allUsers, activations: allActivations, outlets: allOutlets, templates: allTemplates, workbookTemplates: allWorkbookTemplates, reports: visibleReports, photos: allPhotos, reviews: allReviews, settings: Object.fromEntries(allSettings.map(x => [x.key, x.value])) });
 }
 
 export async function POST(request: Request) {
@@ -94,6 +94,18 @@ export async function POST(request: Request) {
     }
     if(action==="duplicateReport") { const source=(await db.select().from(fieldReports).where(eq(fieldReports.id,n(data.id))).limit(1))[0];if(!source)return bad("Report not found.",404);const {id,createdAt,updatedAt,submittedAt,deletedAt,...copy}=source;const [row]=await db.insert(fieldReports).values({...copy,status:"Draft",submittedBy:profile.id,activationDate:s(data.activationDate)||source.activationDate,week:n(data.week)||source.week}).returning();await db.insert(auditLog).values({userId:profile.id,action:"DUPLICATE",entityType:"report",entityId:row.id,detail:`From ${id}`});return Response.json({item:row}); }
     if(action==="reviewReport") { if(!reviewers.has(profile.role))return denied();const id=n(data.id);const current=(await db.select().from(fieldReports).where(eq(fieldReports.id,id)).limit(1))[0];if(!current)return bad("Report not found.",404);const allowed=["Under Review","Approved","Returned for Correction","Rejected","Completed"];const next=s(data.status);if(!allowed.includes(next))return bad("Invalid review status.");await db.update(fieldReports).set({status:next,updatedAt:now()}).where(eq(fieldReports.id,id));await db.insert(reviewHistory).values({reportId:id,reviewerId:profile.id,previousStatus:current.status,newStatus:next,comment:s(data.comment)});await db.insert(auditLog).values({userId:profile.id,action:"STATUS_CHANGE",entityType:"report",entityId:id,detail:`${current.status} -> ${next}`});return Response.json({ok:true}); }
+    if(action==="resetWeek") {
+      if(profile.role!=="Administrator")return denied();
+      const week=n(data.week),activationId=n(data.activationId);
+      if(!week||!activationId)return bad("Select an activation and week to reset.");
+      const resetAt=now();
+      const workerReports=await db.select({id:fieldReports.id}).from(fieldReports).where(and(eq(fieldReports.activationId,activationId),eq(fieldReports.week,week),isNull(fieldReports.sourceWorkbookId),isNull(fieldReports.deletedAt)));
+      if(workerReports.length){
+        await db.update(fieldReports).set({deletedAt:resetAt,updatedAt:resetAt}).where(and(eq(fieldReports.activationId,activationId),eq(fieldReports.week,week),isNull(fieldReports.sourceWorkbookId),isNull(fieldReports.deletedAt)));
+      }
+      await db.insert(auditLog).values({userId:profile.id,action:"RESET_WEEK",entityType:"week",entityId:week,detail:`Activation ${activationId}; ${workerReports.length} worker report(s) reset`});
+      return Response.json({ok:true,resetCount:workerReports.length,week,activationId});
+    }
     if(action==="deleteReport") { const id=n(data.id);const current=(await db.select().from(fieldReports).where(eq(fieldReports.id,id)).limit(1))[0];if(!current)return bad("Report not found.",404);if(current.submittedBy!==profile.id&&!elevated.has(profile.role))return denied();await db.update(fieldReports).set({deletedAt:now(),updatedAt:now()}).where(eq(fieldReports.id,id));await db.insert(auditLog).values({userId:profile.id,action:"DELETE",entityType:"report",entityId:id});return Response.json({ok:true}); }
     return bad("Unknown action.");
   } catch (error) { return bad(error instanceof Error ? error.message : "Unexpected server error", 500); }
