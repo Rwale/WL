@@ -237,3 +237,123 @@ export async function updateApprovedReportInWorkbook(
     updatedCells: updates.map(([column]) => `${columnName(column)}${targetRow.rowNumber}`),
   };
 }
+
+export async function updateApprovedReportsInWorkbook(
+  sourceWorkbook: ArrayBuffer | Uint8Array,
+  reports: ApprovedReportExcelValues[],
+) {
+  if (!reports.length) {
+    return {
+      bytes: sourceWorkbook instanceof Uint8Array ? sourceWorkbook : new Uint8Array(sourceWorkbook),
+      updatedReports: [] as Array<{ sheetName: string; rowNumber: number; outletName: string; updatedCells: string[] }>,
+      skipped: [] as Array<{ week: number; outletName: string; reason: string }>,
+    };
+  }
+
+  const zip = await JSZip.loadAsync(sourceWorkbook);
+  const workbookFile = zip.file("xl/workbook.xml");
+  const relationshipFile = zip.file("xl/_rels/workbook.xml.rels");
+  if (!workbookFile || !relationshipFile) throw new Error("The uploaded file is not a valid Excel workbook.");
+
+  let workbookXml = await workbookFile.async("string");
+  const relationshipsXml = await relationshipFile.async("string");
+  const sharedFile = zip.file("xl/sharedStrings.xml");
+  const strings = sharedStrings(sharedFile ? await sharedFile.async("string") : null);
+  const updatedReports: Array<{ sheetName: string; rowNumber: number; outletName: string; updatedCells: string[] }> = [];
+  const skipped: Array<{ week: number; outletName: string; reason: string }> = [];
+  const reportsByWeek = new Map<number, ApprovedReportExcelValues[]>();
+  for (const report of reports) {
+    const group = reportsByWeek.get(report.week) ?? [];
+    group.push(report);
+    reportsByWeek.set(report.week, group);
+  }
+
+  for (const [week, weekReports] of reportsByWeek) {
+    const requestedSheet = `WEEK ${week}`;
+    let relationshipId = "";
+    for (const match of workbookXml.matchAll(/<sheet\b([^>]*)\/?>(?:<\/sheet>)?/g)) {
+      const name = decodeXml(match[1].match(/\bname="([^"]+)"/)?.[1] ?? "");
+      if (normalise(name) === normalise(requestedSheet)) {
+        relationshipId = match[1].match(/\br:id="([^"]+)"/)?.[1] ?? "";
+        break;
+      }
+    }
+    const target = relationshipId ? relationshipTarget(relationshipsXml, relationshipId) : null;
+    const worksheetPath = target ? (target.startsWith("/") ? target.slice(1) : `xl/${target.replace(/^\.\//, "")}`) : "";
+    const worksheetFile = worksheetPath ? zip.file(worksheetPath) : null;
+    if (!worksheetFile) {
+      for (const report of weekReports) skipped.push({ week, outletName: report.outletName, reason: `${requestedSheet} is not available in the active workbook.` });
+      continue;
+    }
+
+    let worksheetXml = await worksheetFile.async("string");
+    const rows = parseRows(worksheetXml, strings);
+    const headerRow = rows.find(row => {
+      const values = [...row.cells.values()].map(normalise);
+      return values.some(value => value === "OUTLETS" || value === "OUTLET") && values.includes("LOCATION");
+    });
+    if (!headerRow) {
+      for (const report of weekReports) skipped.push({ week, outletName: report.outletName, reason: `${requestedSheet} has no outlet table.` });
+      continue;
+    }
+
+    const maxColumn = Math.max(...headerRow.cells.keys(), 0);
+    const headers = Array.from({ length: maxColumn + 1 }, (_, index) => headerRow.cells.get(index) ?? null);
+    const outletColumn = findColumn(headers, 0, ["OUTLETS", "OUTLET"], 1);
+    const locationColumn = findColumn(headers, 0, ["LOCATION"], 2);
+    const firstRow = rows.find(row => row.rowNumber === 1);
+    const cumulativeFromTitle = firstRow
+      ? [...firstRow.cells.entries()].find(([, value]) => /CUM+ULATIVE/.test(normalise(value)))?.[0]
+      : undefined;
+    const lastOpeningStock = headers.reduce<number>(
+      (result, value, index) => normalise(value).includes("OPENING STOCK") ? index : result,
+      -1,
+    );
+    const cumulativeStart = cumulativeFromTitle ?? Math.max(0, lastOpeningStock);
+    const openingColumn = findColumn(headers, cumulativeStart, ["OPENING STOCK"], cumulativeStart);
+    const salesTargetColumn = findColumn(headers, openingColumn + 1, ["TARGET"], openingColumn + 1);
+    const actualSalesColumn = findColumn(headers, salesTargetColumn + 1, ["SALES"], salesTargetColumn + 1);
+    const closingColumn = findColumn(headers, actualSalesColumn + 1, ["CLOSING STOCK"], actualSalesColumn + 2);
+    const samplingTargetColumn = findColumn(headers, closingColumn + 1, ["SAMPLING OBJECTIVE", "SAMPLING TARGET"], closingColumn + 1);
+    const actualSampledColumn = findColumn(headers, samplingTargetColumn + 1, ["WEEKLY SAMPLING", "NO OF CONSUMER SAMPLED", "SAMPLING ACHIVED", "SAMPLING ACHIEVED"], samplingTargetColumn + 1);
+    const candidates = rows.filter(row => row.rowNumber > headerRow.rowNumber && Number(row.cells.get(0)) > 0);
+
+    for (const report of weekReports) {
+      const desiredOutlet = normalise(report.outletName);
+      const desiredLocation = normalise(report.location);
+      const exactRows = candidates.filter(row => normalise(row.cells.get(outletColumn)) === desiredOutlet);
+      const targetRow = exactRows.find(row => !desiredLocation || normalise(row.cells.get(locationColumn)) === desiredLocation) ?? exactRows[0];
+      if (!targetRow) {
+        skipped.push({ week, outletName: report.outletName, reason: `${report.outletName} was not found in ${requestedSheet}.` });
+        continue;
+      }
+      const updates = [
+        [openingColumn, number(report.openingStock)],
+        [salesTargetColumn, number(report.salesTarget)],
+        [actualSalesColumn, number(report.actualSales)],
+        [closingColumn, number(report.closingStock)],
+        [samplingTargetColumn, number(report.samplingTarget)],
+        [actualSampledColumn, number(report.actualSampled)],
+      ] as const;
+      for (const [column, value] of updates) worksheetXml = setNumericCell(worksheetXml, `${columnName(column)}${targetRow.rowNumber}`, value);
+      updatedReports.push({
+        sheetName: requestedSheet,
+        rowNumber: targetRow.rowNumber,
+        outletName: report.outletName,
+        updatedCells: updates.map(([column]) => `${columnName(column)}${targetRow.rowNumber}`),
+      });
+    }
+    zip.file(worksheetPath, worksheetXml);
+  }
+
+  if (updatedReports.length) {
+    workbookXml = requestFullCalculation(workbookXml);
+    zip.file("xl/workbook.xml", workbookXml);
+    for (const name of Object.keys(zip.files).filter(name => /^xl\/pivotCache\/pivotCacheDefinition\d+\.xml$/.test(name))) {
+      const file = zip.file(name);
+      if (file) zip.file(name, requestPivotRefresh(await file.async("string")));
+    }
+  }
+  const bytes = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 6 } });
+  return { bytes, updatedReports, skipped };
+}
